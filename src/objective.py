@@ -49,6 +49,12 @@ except:
     logger.warning("openff.evaluator module import failed\n")
 
 try:
+    from forcebalance.evaluator_io import Evaluator_GAFF
+except:
+    logger.warning(traceback.format_exc())
+    logger.warning("openff.evaluator module import failed\n")
+
+try:
     from forcebalance.recharge_io import Recharge_SMIRNOFF
 except:
     logger.warning(traceback.format_exc())
@@ -125,6 +131,7 @@ Implemented_Targets = {
     'TORSIONPROFILE_OPENMM': TorsionProfileTarget_OpenMM,
     'TORSIONPROFILE_SMIRNOFF': TorsionProfileTarget_SMIRNOFF,
     'EVALUATOR_SMIRNOFF': Evaluator_SMIRNOFF,
+    'EVALUATOR_GAFF': Evaluator_GAFF,
     'RECHARGE_SMIRNOFF': Recharge_SMIRNOFF,
     'REMOTE_TARGET':RemoteTarget,
     }

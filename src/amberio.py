@@ -52,7 +52,8 @@ frcmod_pdict = {'BONDS': {'Atom':[0], 1:'K', 2:'B'},
                 'PDIHS5':{'Atom':[0], 2:'K', 3:'B'},
                 'PDIHS6':{'Atom':[0], 2:'K', 3:'B'},
                 'IDIHS' :{'Atom':[0], 1:'K', 2:'B'},
-                'VDW':{'Atom':[0], 1:'S', 2:'T'}
+                'VDW':{'Atom':[0], 1:'S', 2:'T'},
+                'GBSA':{'Atom':[0], 1:'R'},
                 }
 
 def is_mol2_atom(line):
@@ -620,6 +621,10 @@ class FrcMod_Reader(BaseReader):
         elif match('^nonbon$', line.strip().lower()):
             self.dihe  = False
             self.itype = 'VDW'
+            return
+        elif match('^gbsa$', line.strip().lower()):
+            self.dihe  = False
+            self.itype = 'GBSA'
             return
         elif len(s) == 0:
             self.dihe  = False

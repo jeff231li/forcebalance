@@ -37,6 +37,13 @@ except ImportError:
 
 logger = getLogger(__name__)
 
+gaff_attribute_pdict = {
+    "BONDS": {"K": "k", "B": "length"},
+    "ANGLES": {"K": "k", "B": "theta"},
+    "VDW": {"S": "rmin_half", "T": "epsilon"},
+    "GBSA": {"R": "radius"},
+}
+
 
 class Evaluator_SMIRNOFF(Target):
     """A custom optimisation target which employs the `openff-evaluator`
@@ -470,7 +477,7 @@ class Evaluator_SMIRNOFF(Target):
                 )
 
                 if parameter_value is None or is_cosmetic:
-                    # We don't wan't gradients w.r.t. cosmetic parameters.
+                    # We don't want gradients w.r.t. cosmetic parameters.
                     continue
 
                 parameter_unit = parameter_value.units
@@ -527,7 +534,7 @@ class Evaluator_SMIRNOFF(Target):
         if isinstance(results, EvaluatorException):
 
             raise ValueError(
-                "An uncaught exception occured within the evaluator "
+                "An uncaught exception occurred within the evaluator "
                 "framework: %s" % str(results)
             )
 
@@ -818,3 +825,181 @@ class Evaluator_SMIRNOFF(Target):
             printcool_dictionary(
                 dict_for_print, title=title, bold=True, color=4, keywidth=15
             )
+
+
+class Evaluator_GAFF(Evaluator_SMIRNOFF):
+    """Analogous to Evaluator_SMIRNOFF class but works with the GAFF
+    force field. Currently, the GAFF protocol only works for host-guest
+    binding protocol."""
+
+    def __init__(self, options, tgt_opts, forcefield):
+        super(Evaluator_GAFF, self).__init__(options, tgt_opts, forcefield)
+
+        self.frcmod_parameters = None
+
+    def _parameter_value_from_gradient_key(self, gradient_key):
+        """Extracts the value of the parameter in the current
+        open force field object pointed to by a given
+        `ParameterGradientKey` object.
+
+        Parameters
+        ----------
+        gradient_key: openff.evaluator.forcefield.ParameterGradientKey
+            The gradient key which points to the parameter of interest.
+
+        Returns
+        -------
+        unit.Quantity
+            The value of the parameter.
+        bool
+            Returns True if the parameter is a cosmetic one.
+        """
+
+        parameter_value = None
+
+        if re.match("BONDS", gradient_key.tag.upper()):
+            parameter_value = self.frcmod_paramters["BONDS"][gradient_key.atom_type][gradient_key.attribute]
+            if gradient_key.attribute == "k":
+                parameter_value *= unit.kcal / unit.mole / unit.angstrom**2
+            elif gradient_key.attribute == "length":
+                parameter_value *= unit.angstrom
+
+        elif re.match("ANGLES", gradient_key.tag.upper()):
+            parameter_value = self.frcmod_paramters["ANGLE"][gradient_key.atom_type][gradient_key.attribute]
+            if gradient_key.attribute == "k":
+                parameter_value *= unit.kcal / unit.mole / unit.radian**2
+            elif gradient_key.attribute == "theta":
+                parameter_value *= unit.degree
+
+        elif re.match("VDW", gradient_key.tag.upper()):
+            parameter_value = self.frcmod_paramters["NONBON"][gradient_key.atom_type][gradient_key.attribute]
+            if gradient_key.attribute == "rmin_half":
+                parameter_value *= unit.angstrom
+            elif gradient_key.attribute == "epsilon":
+                parameter_value *= unit.kcal / unit.mole
+
+        elif re.match("GBSA", gradient_key.tag.upper()):
+            parameter_value = self.frcmod_paramters["GBSA"][gradient_key.atom_type][gradient_key.attribute]
+            parameter_value *= unit.angstrom
+
+        return parameter_value
+
+    def _extract_physical_parameter_values(self):
+        """Extracts an array of the values of the physical parameters
+        (which are not cosmetic) from the current `FF.openff_forcefield`
+        object.
+
+        Returns
+        -------
+        np.ndarray
+            The array of values of shape (len(self._gradient_key_mappings),)
+        """
+        pass
+
+    def submit_jobs(self, mvals, AGrad=True, AHess=True):
+        """
+        Submit jobs for evaluating the objective function
+
+        Parameters
+        ----------
+        mvals: np.ndarray
+            mvals array containing the math values of the parameters
+        AGrad: bool
+            Flag for computing gradients or not
+        AHess: bool
+            Flag for computing hessian or not
+
+        Notes
+        -----
+        1. This function is called before wq_complete() and get().
+        2. This function should not block.
+        """
+
+        from openff.evaluator.protocols.paprika.forcefield import GAFFForceField
+        from openff.evaluator.forcefield import TLeapForceFieldSource
+
+        self.FF.make(mvals)
+
+        force_field = GAFFForceField()
+        for fnm in self.FF.fnms:
+            if 'frcmod' in fnm:
+                force_field.frcmod_parameters = GAFFForceField.parse_frcmod(
+                    os.path.join(self.FF.root, self.ffdir, fnm)
+                )
+
+        force_field_source = TLeapForceFieldSource.from_object(force_field)
+        force_field_source.custom_frcmod = os.path.join(self.FF.root, self.ffdir, fnm)
+        self.frcmod_parameters = force_field_source.custom_frcmod
+
+        # Determine which gradients (if any) we should be estimating.
+        parameter_gradient_keys = []
+
+        self._gradient_key_mappings = {}
+        self._parameter_units = {}
+
+        if AGrad is True:
+
+            index_counter = 0
+
+            for field_list in self.FF.pfields:
+                string_key = field_list[0]
+                key_split = string_key.split("/")
+
+                # Ignore electrostatics and dihedrals.
+                if re.match("COUL", key_split[0]) or re.match('PDIH', key_split[0]) or re.match('IDIH', key_split[0]):
+                    continue
+
+                parameter_tag = key_split[0][:-1]
+                parameter_atom_type = key_split[1].strip()
+                parameter_attribute = gaff_attribute_pdict[parameter_tag][key_split[0][-1]]
+
+                # Use the full attribute name (e.g. k1) for the gradient key.
+                parameter_gradient_key = ParameterGradientKey(
+                    tag=parameter_tag,
+                    atom_type=parameter_atom_type,
+                    attribute=parameter_attribute,
+                )
+
+                # Get unit of gradient parameter
+                parameter_value = self._parameter_value_from_gradient_key(
+                    parameter_gradient_key,
+                )
+
+                if parameter_value is None:
+                    continue
+
+                parameter_unit = parameter_value.units
+                parameter_gradient_keys.append(parameter_gradient_key)
+
+                self._gradient_key_mappings[parameter_gradient_key] = index_counter
+                self._parameter_units[parameter_gradient_key] = parameter_unit
+
+                index_counter += 1
+
+        # Submit the estimation request.
+        self._pending_estimate_request, _ = self._client.request_estimate(
+            property_set=self._reference_data_set,
+            force_field_source=force_field_source,
+            options=self._options.estimation_options,
+            parameter_gradient_keys=parameter_gradient_keys,
+        )
+
+        logger.info(
+            "Requesting the estimation of {} properties, and their "
+            "gradients with respect to {} parameters.\n".format(
+                len(self._reference_data_set), len(parameter_gradient_keys)
+            )
+        )
+
+        if (
+            self._pending_estimate_request.results(
+                True, polling_interval=self._options.polling_interval
+            )[0] is None
+        ):
+
+            raise RuntimeError(
+                "No `EvaluatorServer` could be found to submit the calculations to. "
+                "Please double check that a server is running, and that the connection "
+                "settings specified in the input script are correct."
+            )
+
