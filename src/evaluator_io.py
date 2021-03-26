@@ -14,19 +14,23 @@ import re
 import tempfile
 
 import numpy as np
-from forcebalance.nifty import warn_once, printcool, printcool_dictionary
+from forcebalance.nifty import printcool, printcool_dictionary, warn_once
 from forcebalance.output import getLogger
 from forcebalance.target import Target
 
 try:
     from openff.evaluator import unit
     from openff.evaluator.attributes import UNDEFINED
-    from openff.evaluator.client import EvaluatorClient, ConnectionOptions, RequestOptions
+    from openff.evaluator.client import (
+        ConnectionOptions,
+        EvaluatorClient,
+        RequestOptions,
+    )
     from openff.evaluator.datasets import PhysicalPropertyDataSet
+    from openff.evaluator.forcefield import ParameterGradientKey
     from openff.evaluator.utils.exceptions import EvaluatorException
     from openff.evaluator.utils.openmm import openmm_quantity_to_pint
     from openff.evaluator.utils.serialization import TypedJSONDecoder, TypedJSONEncoder
-    from openff.evaluator.forcefield import ParameterGradientKey
 except ImportError:
     warn_once("Note: Failed to import the optional openff.evaluator package. ")
 
@@ -38,10 +42,10 @@ except ImportError:
 logger = getLogger(__name__)
 
 gaff_attribute_pdict = {
-    "BONDS": {"K": "k", "B": "length"},
-    "ANGLES": {"K": "k", "B": "theta"},
-    "VDW": {"S": "rmin_half", "T": "epsilon"},
-    "GBSA": {"R": "radius"},
+    "BONDS": {"tag": "Bond", "K": "k", "B": "length"},
+    "ANGLES": {"tag": "Angle", "K": "k", "B": "theta"},
+    "VDW": {"tag": "vdW", "S": "rmin_half", "T": "epsilon"},
+    "GBSA": {"tag": "GBSA", "R": "radius"},
 }
 
 
@@ -835,8 +839,6 @@ class Evaluator_GAFF(Evaluator_SMIRNOFF):
     def __init__(self, options, tgt_opts, forcefield):
         super(Evaluator_GAFF, self).__init__(options, tgt_opts, forcefield)
 
-        self.frcmod_parameters = None
-
     def _parameter_value_from_gradient_key(self, gradient_key):
         """Extracts the value of the parameter in the current
         open force field object pointed to by a given
@@ -854,47 +856,59 @@ class Evaluator_GAFF(Evaluator_SMIRNOFF):
         bool
             Returns True if the parameter is a cosmetic one.
         """
+        from openff.evaluator.protocols.paprika.forcefield import GAFFForceField
+
+        fnm = [fnm for fnm in self.FF.fnms if "frcmod" in fnm][0]
+        force_field = GAFFForceField.from_frcmod(fnm)
+        frcmod_parameters = force_field.frcmod_parameters
 
         parameter_value = None
 
-        if re.match("BONDS", gradient_key.tag.upper()):
-            parameter_value = self.frcmod_paramters["BONDS"][gradient_key.atom_type][gradient_key.attribute]
+        if gradient_key.tag == "Bond":
+            parameter_value = frcmod_parameters["BOND"][gradient_key.smirks][
+                gradient_key.attribute
+            ]
             if gradient_key.attribute == "k":
-                parameter_value *= unit.kcal / unit.mole / unit.angstrom**2
+                parameter_value *= unit.kcal / unit.mole / unit.angstrom ** 2
             elif gradient_key.attribute == "length":
                 parameter_value *= unit.angstrom
 
-        elif re.match("ANGLES", gradient_key.tag.upper()):
-            parameter_value = self.frcmod_paramters["ANGLE"][gradient_key.atom_type][gradient_key.attribute]
+        elif gradient_key.tag == "Angle":
+            parameter_value = frcmod_parameters["ANGLE"][gradient_key.smirks][
+                gradient_key.attribute
+            ]
             if gradient_key.attribute == "k":
-                parameter_value *= unit.kcal / unit.mole / unit.radian**2
+                parameter_value *= unit.kcal / unit.mole / unit.radian ** 2
             elif gradient_key.attribute == "theta":
                 parameter_value *= unit.degree
 
-        elif re.match("VDW", gradient_key.tag.upper()):
-            parameter_value = self.frcmod_paramters["NONBON"][gradient_key.atom_type][gradient_key.attribute]
+        elif gradient_key.tag == "Dihedral":
+            pass
+
+        elif gradient_key.tag == "Improper":
+            pass
+
+        elif gradient_key.tag == "Electrostatic":
+            pass
+
+        elif gradient_key.tag == "vdW":
+            parameter_value = frcmod_parameters["VDW"][gradient_key.smirks][
+                gradient_key.attribute
+            ]
             if gradient_key.attribute == "rmin_half":
                 parameter_value *= unit.angstrom
             elif gradient_key.attribute == "epsilon":
                 parameter_value *= unit.kcal / unit.mole
 
-        elif re.match("GBSA", gradient_key.tag.upper()):
-            parameter_value = self.frcmod_paramters["GBSA"][gradient_key.atom_type][gradient_key.attribute]
-            parameter_value *= unit.angstrom
+        elif gradient_key.tag == "GBSA":
+            parameter_value = (
+                frcmod_parameters["GBSA"][gradient_key.smirks][
+                    gradient_key.attribute
+                ]
+                * unit.nanometer
+            )
 
-        return parameter_value
-
-    def _extract_physical_parameter_values(self):
-        """Extracts an array of the values of the physical parameters
-        (which are not cosmetic) from the current `FF.openff_forcefield`
-        object.
-
-        Returns
-        -------
-        np.ndarray
-            The array of values of shape (len(self._gradient_key_mappings),)
-        """
-        pass
+        return parameter_value, None
 
     def submit_jobs(self, mvals, AGrad=True, AHess=True):
         """
@@ -915,21 +929,14 @@ class Evaluator_GAFF(Evaluator_SMIRNOFF):
         2. This function should not block.
         """
 
-        from openff.evaluator.protocols.paprika.forcefield import GAFFForceField
         from openff.evaluator.forcefield import TLeapForceFieldSource
+        from openff.evaluator.protocols.paprika.forcefield import GAFFForceField
 
         self.FF.make(mvals)
 
-        force_field = GAFFForceField()
-        for fnm in self.FF.fnms:
-            if 'frcmod' in fnm:
-                force_field.frcmod_parameters = GAFFForceField.parse_frcmod(
-                    os.path.join(self.FF.root, self.ffdir, fnm)
-                )
-
+        fnm = [fnm for fnm in self.FF.fnms if "frcmod" in fnm][0]
+        force_field = GAFFForceField.from_frcmod(fnm)
         force_field_source = TLeapForceFieldSource.from_object(force_field)
-        force_field_source.custom_frcmod = os.path.join(self.FF.root, self.ffdir, fnm)
-        self.frcmod_parameters = force_field_source.custom_frcmod
 
         # Determine which gradients (if any) we should be estimating.
         parameter_gradient_keys = []
@@ -946,23 +953,29 @@ class Evaluator_GAFF(Evaluator_SMIRNOFF):
                 key_split = string_key.split("/")
 
                 # Ignore electrostatics and dihedrals.
-                if re.match("COUL", key_split[0]) or re.match('PDIH', key_split[0]) or re.match('IDIH', key_split[0]):
+                if (
+                    re.match("COUL", key_split[0])
+                    or re.match("PDIH", key_split[0])
+                    or re.match("IDIH", key_split[0])
+                ):
                     continue
 
-                parameter_tag = key_split[0][:-1]
+                parameter_tag = gaff_attribute_pdict[key_split[0][:-1]]["tag"]
                 parameter_atom_type = key_split[1].strip()
-                parameter_attribute = gaff_attribute_pdict[parameter_tag][key_split[0][-1]]
+                parameter_attribute = gaff_attribute_pdict[parameter_tag][
+                    key_split[0][-1]
+                ]
 
                 # Use the full attribute name (e.g. k1) for the gradient key.
                 parameter_gradient_key = ParameterGradientKey(
                     tag=parameter_tag,
-                    atom_type=parameter_atom_type,
+                    smirks=parameter_atom_type,
                     attribute=parameter_attribute,
                 )
 
                 # Get unit of gradient parameter
-                parameter_value = self._parameter_value_from_gradient_key(
-                    parameter_gradient_key,
+                parameter_value, _ = self._parameter_value_from_gradient_key(
+                    parameter_gradient_key
                 )
 
                 if parameter_value is None:
@@ -1002,4 +1015,3 @@ class Evaluator_GAFF(Evaluator_SMIRNOFF):
                 "Please double check that a server is running, and that the connection "
                 "settings specified in the input script are correct."
             )
-
