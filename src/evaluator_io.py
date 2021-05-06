@@ -311,7 +311,6 @@ class Evaluator_SMIRNOFF(Target):
         bool
             Returns True if the parameter is a cosmetic one.
         """
-
         parameter_handler = self.FF.openff_forcefield.get_parameter_handler(
             gradient_key.tag
         )
@@ -345,6 +344,10 @@ class Evaluator_SMIRNOFF(Target):
             or parameter_attribute in parameter._cosmetic_attribs
         ):
             is_cosmetic = True
+
+        if gradient_key.tag == "GBSA" and gradient_key.attribute == "scale":
+            from simtk import unit as simtk_unit
+            parameter_value = simtk_unit.Quantity(parameter_value, None)
 
         return openmm_quantity_to_pint(parameter_value), is_cosmetic
 
@@ -856,10 +859,10 @@ class Evaluator_GAFF(Evaluator_SMIRNOFF):
         bool
             Returns True if the parameter is a cosmetic one.
         """
-        from openff.evaluator.protocols.paprika.forcefield import GAFFForceField
+        from openff.evaluator.protocols.forcefield import GAFFForceField
 
         fnm = [fnm for fnm in self.FF.fnms if "frcmod" in fnm][0]
-        force_field = GAFFForceField.from_frcmod(fnm)
+        force_field = GAFFForceField.from_file(fnm)
         frcmod_parameters = force_field.frcmod_parameters
 
         parameter_value = None
@@ -930,12 +933,12 @@ class Evaluator_GAFF(Evaluator_SMIRNOFF):
         """
 
         from openff.evaluator.forcefield import TLeapForceFieldSource
-        from openff.evaluator.protocols.paprika.forcefield import GAFFForceField
+        from openff.evaluator.protocols.forcefield import GAFFForceField
 
         self.FF.make(mvals)
 
         fnm = [fnm for fnm in self.FF.fnms if "frcmod" in fnm][0]
-        force_field = GAFFForceField.from_frcmod(fnm)
+        force_field = GAFFForceField.from_file(fnm)
         force_field_source = TLeapForceFieldSource.from_object(force_field)
 
         # Determine which gradients (if any) we should be estimating.
@@ -949,6 +952,7 @@ class Evaluator_GAFF(Evaluator_SMIRNOFF):
             index_counter = 0
 
             for field_list in self.FF.pfields:
+
                 string_key = field_list[0]
                 key_split = string_key.split("/")
 
