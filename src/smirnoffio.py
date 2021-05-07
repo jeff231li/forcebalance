@@ -52,7 +52,9 @@ try:
     # QYD: name of class are modified to avoid colliding with ForceBalance Molecule
     from openff.toolkit.topology import Molecule as OffMolecule
     from openff.toolkit.topology import Topology as OffTopology
+    toolkit_import_success = True
 except ImportError:
+    toolkit_import_success = False
     pass
 
 ## pdict is a useless variable if the force field is XML.
@@ -239,6 +241,8 @@ class SMIRNOFF(OpenMM):
 
     def __init__(self, name="openmm", **kwargs):
         self.valkwd = ['ffxml', 'pdb', 'mol2', 'platname', 'precision', 'mmopts', 'vsite_bonds', 'implicit_solvent', 'restrain_k', 'freeze_atoms']
+        if not toolkit_import_success:
+            warn_once("Note: Failed to import the OpenFF Toolkit - SMIRNOFF Engine will not work. ")
         super(SMIRNOFF,self).__init__(name=name, **kwargs)
 
     def readsrc(self, **kwargs):
