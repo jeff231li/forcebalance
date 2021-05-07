@@ -45,7 +45,7 @@ gaff_attribute_pdict = {
     "BONDS": {"tag": "Bond", "K": "k", "B": "length"},
     "ANGLES": {"tag": "Angle", "K": "k", "B": "theta"},
     "VDW": {"tag": "vdW", "S": "rmin_half", "T": "epsilon"},
-    "GBSA": {"tag": "GBSA", "R": "radius"},
+    "GBSA": {"tag": "GBSA", "R": "radius", "S": "scale"},
 }
 
 
@@ -904,12 +904,13 @@ class Evaluator_GAFF(Evaluator_SMIRNOFF):
                 parameter_value *= unit.kcal / unit.mole
 
         elif gradient_key.tag == "GBSA":
-            parameter_value = (
-                frcmod_parameters["GBSA"][gradient_key.smirks][
-                    gradient_key.attribute
-                ]
-                * unit.nanometer
-            )
+            parameter_value = frcmod_parameters["GBSA"][gradient_key.smirks][
+                gradient_key.attribute
+            ]
+            if gradient_key.attribute == "radius":
+                parameter_value *= unit.nanometer
+            elif gradient_key.attribute == "scale":
+                parameter_value *= unit.dimensionless
 
         return parameter_value, None
 

@@ -53,7 +53,7 @@ frcmod_pdict = {'BONDS': {'Atom':[0], 1:'K', 2:'B'},
                 'PDIHS6':{'Atom':[0], 2:'K', 3:'B'},
                 'IDIHS' :{'Atom':[0], 1:'K', 2:'B'},
                 'VDW':{'Atom':[0], 1:'S', 2:'T'},
-                'GBSA':{'Atom':[0], 1:'R'},
+                'GBSA':{'Atom':[0], 1:'R', 2:'S'},
                 }
 
 def is_mol2_atom(line):
