@@ -150,7 +150,7 @@ def assign_openff_parameter(ff, new_value, pid):
     if pid not in ff._forcebalance_assign_parameter_map:
 
         if pid.startswith("/"):
-            # Handle the case were we are optimizing a handler attribute directly such
+            # Handle the case where we are optimizing a handler attribute directly such
             # as the 1-4 scaling factor.
             handler_name, value_name = pid[1:].split('/')
 

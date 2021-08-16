@@ -30,7 +30,7 @@ try:
     from openff.evaluator.utils.exceptions import EvaluatorException
     from openff.evaluator.utils.openmm import openmm_quantity_to_pint
     from openff.evaluator.utils.serialization import TypedJSONDecoder, TypedJSONEncoder
-    from openff.evaluator.forcefield import ParameterGradientKey
+    from openff.evaluator.forcefield import ParameterGradientKey, ParameterLevel
     evaluator_import_success = True
 except ImportError:
     evaluator_import_success = False
@@ -322,7 +322,10 @@ class Evaluator_SMIRNOFF(Target):
         parameter_handler = self.FF.openff_forcefield.get_parameter_handler(
             gradient_key.tag
         )
-        parameter = parameter_handler.parameters[gradient_key.smirks]
+        if gradient_key.level == ParameterLevel.Global:
+            parameter = parameter_handler
+        elif gradient_key.level == ParameterLevel.PerParticle:
+            parameter = parameter_handler.parameters[gradient_key.smirks]
 
         attribute_split = re.split(r"(\d+)", gradient_key.attribute)
         attribute_split = list(filter(None, attribute_split))
@@ -353,7 +356,14 @@ class Evaluator_SMIRNOFF(Target):
         ):
             is_cosmetic = True
 
-        if gradient_key.tag == "GBSA" and gradient_key.attribute == "scale":
+        if gradient_key.tag in ["GBSA", "CustomOBC"] and gradient_key.attribute in [
+            "scale",
+            "alpha",
+            "beta",
+            "gamma",
+            "solvent_dielectric",
+            "solute_dielectric",
+        ]:
             from simtk import unit as simtk_unit
             parameter_value = simtk_unit.Quantity(parameter_value, None)
 
@@ -452,13 +462,13 @@ class Evaluator_SMIRNOFF(Target):
         self.FF.make(mvals)
 
         force_field = smirnoff.ForceField(
-            self.FF.offxml, allow_cosmetic_attributes=True
+            self.FF.offxml, allow_cosmetic_attributes=True, load_plugins=True
         )
 
         # strip out cosmetic attributes
         with tempfile.NamedTemporaryFile(mode="w", suffix=".offxml") as file:
             force_field.to_file(file.name, discard_cosmetic_attributes=True)
-            force_field = smirnoff.ForceField(file.name)
+            force_field = smirnoff.ForceField(file.name, load_plugins=True)
 
         # Determine which gradients (if any) we should be estimating.
         parameter_gradient_keys = []
@@ -475,15 +485,23 @@ class Evaluator_SMIRNOFF(Target):
                 string_key = field_list[0]
                 key_split = string_key.split("/")
 
-                parameter_tag = key_split[0].strip()
-                parameter_smirks = key_split[3].strip()
-                parameter_attribute = key_split[2].strip()
+                if string_key.startswith("/"):
+                    parameter_level = ParameterLevel.Global
+                    parameter_tag = key_split[1].strip()
+                    parameter_attribute = key_split[2].strip()
+                    parameter_smirks = None
+                else:
+                    parameter_level = ParameterLevel.PerParticle
+                    parameter_tag = key_split[0].strip()
+                    parameter_attribute = key_split[2].strip()
+                    parameter_smirks = key_split[3].strip()
 
                 # Use the full attribute name (e.g. k1) for the gradient key.
                 parameter_gradient_key = ParameterGradientKey(
                     tag=parameter_tag,
                     smirks=parameter_smirks,
                     attribute=parameter_attribute,
+                    level=parameter_level,
                 )
 
                 # Find the unit of the gradient parameter.
