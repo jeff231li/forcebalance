@@ -14,6 +14,7 @@ import re
 import tempfile
 
 import numpy as np
+
 from forcebalance.nifty import printcool, printcool_dictionary, warn_once
 from forcebalance.output import getLogger
 from forcebalance.target import Target
@@ -27,16 +28,18 @@ try:
         RequestOptions,
     )
     from openff.evaluator.datasets import PhysicalPropertyDataSet
+    from openff.evaluator.forcefield import ParameterGradientKey
     from openff.evaluator.utils.exceptions import EvaluatorException
     from openff.evaluator.utils.openmm import openmm_quantity_to_pint
     from openff.evaluator.utils.serialization import TypedJSONDecoder, TypedJSONEncoder
-    from openff.evaluator.forcefield import ParameterGradientKey, ParameterLevel
+
     evaluator_import_success = True
 except ImportError:
     evaluator_import_success = False
 
 try:
     from openff.toolkit.typing.engines import smirnoff
+
     toolkit_import_success = True
 except ImportError:
     toolkit_import_success = False
@@ -115,7 +118,7 @@ class Evaluator_SMIRNOFF(Target):
                     property_name: self.denominators[property_name]
                     for property_name in self.denominators
                 },
-                "polling_interval": self.polling_interval
+                "polling_interval": self.polling_interval,
             }
 
             return json.dumps(
@@ -180,10 +183,14 @@ class Evaluator_SMIRNOFF(Target):
     def __init__(self, options, tgt_opts, forcefield):
 
         if not evaluator_import_success:
-            warn_once("Note: Failed to import the OpenFF Evaluator - FB Evaluator target will not work. ")
+            warn_once(
+                "Note: Failed to import the OpenFF Evaluator - FB Evaluator target will not work. "
+            )
 
         if not toolkit_import_success:
-            warn_once("Note: Failed to import the OpenFF Toolkit - FB Evaluator target will not work. ")
+            warn_once(
+                "Note: Failed to import the OpenFF Toolkit - FB Evaluator target will not work. "
+            )
 
         super(Evaluator_SMIRNOFF, self).__init__(options, tgt_opts, forcefield)
 
@@ -289,7 +296,8 @@ class Evaluator_SMIRNOFF(Target):
                 )
 
             printcool_dictionary(
-                dict_for_print, title="Reference %s data" % substance.identifier,
+                dict_for_print,
+                title="Reference %s data" % substance.identifier,
             )
 
         # Assign and normalize weights for each phase point (average for now)
@@ -322,10 +330,11 @@ class Evaluator_SMIRNOFF(Target):
         parameter_handler = self.FF.openff_forcefield.get_parameter_handler(
             gradient_key.tag
         )
-        if gradient_key.level == ParameterLevel.Global:
-            parameter = parameter_handler
-        elif gradient_key.level == ParameterLevel.PerParticle:
-            parameter = parameter_handler.parameters[gradient_key.smirks]
+        parameter = (
+            parameter_handler
+            if gradient_key.smirks is None
+            else parameter_handler.parameters[gradient_key.smirks]
+        )
 
         attribute_split = re.split(r"(\d+)", gradient_key.attribute)
         attribute_split = list(filter(None, attribute_split))
@@ -356,7 +365,7 @@ class Evaluator_SMIRNOFF(Target):
         ):
             is_cosmetic = True
 
-        if gradient_key.tag in ["GBSA", "CustomOBC"] and gradient_key.attribute in [
+        if gradient_key.tag in ["GBSA", "CustomGBSA"] and gradient_key.attribute in [
             "scale",
             "alpha",
             "beta",
@@ -365,7 +374,8 @@ class Evaluator_SMIRNOFF(Target):
             "solute_dielectric",
         ]:
             from simtk import unit as simtk_unit
-            parameter_value = simtk_unit.Quantity(parameter_value, None)
+
+            parameter_value = simtk_unit.Quantity(parameter_value, unit=None)
 
         return openmm_quantity_to_pint(parameter_value), is_cosmetic
 
@@ -486,12 +496,10 @@ class Evaluator_SMIRNOFF(Target):
                 key_split = string_key.split("/")
 
                 if string_key.startswith("/"):
-                    parameter_level = ParameterLevel.Global
                     parameter_tag = key_split[1].strip()
                     parameter_attribute = key_split[2].strip()
                     parameter_smirks = None
                 else:
-                    parameter_level = ParameterLevel.PerParticle
                     parameter_tag = key_split[0].strip()
                     parameter_attribute = key_split[2].strip()
                     parameter_smirks = key_split[3].strip()
@@ -501,7 +509,6 @@ class Evaluator_SMIRNOFF(Target):
                     tag=parameter_tag,
                     smirks=parameter_smirks,
                     attribute=parameter_attribute,
-                    level=parameter_level,
                 )
 
                 # Find the unit of the gradient parameter.
@@ -539,7 +546,8 @@ class Evaluator_SMIRNOFF(Target):
         if (
             self._pending_estimate_request.results(
                 True, polling_interval=self._options.polling_interval
-            )[0] is None
+            )[0]
+            is None
         ):
 
             raise RuntimeError(
@@ -853,7 +861,8 @@ class Evaluator_SMIRNOFF(Target):
             }
             title = (
                 "%s %s\nTemperature  Pressure Substance  Reference  Calculated +- "
-                "Stdev     Delta    Weight    Denom     Term  " % (self.name, property_name)
+                "Stdev     Delta    Weight    Denom     Term  "
+                % (self.name, property_name)
             )
             printcool_dictionary(
                 dict_for_print, title=title, bold=True, color=4, keywidth=15
@@ -1038,7 +1047,8 @@ class Evaluator_GAFF(Evaluator_SMIRNOFF):
         if (
             self._pending_estimate_request.results(
                 True, polling_interval=self._options.polling_interval
-            )[0] is None
+            )[0]
+            is None
         ):
 
             raise RuntimeError(
