@@ -327,6 +327,8 @@ class Evaluator_SMIRNOFF(Target):
         bool
             Returns True if the parameter is a cosmetic one.
         """
+        from simtk import unit as simtk_unit
+
         parameter_handler = self.FF.openff_forcefield.get_parameter_handler(
             gradient_key.tag
         )
@@ -365,17 +367,8 @@ class Evaluator_SMIRNOFF(Target):
         ):
             is_cosmetic = True
 
-        if gradient_key.tag in ["GBSA", "CustomGBSA"] and gradient_key.attribute in [
-            "scale",
-            "alpha",
-            "beta",
-            "gamma",
-            "solvent_dielectric",
-            "solute_dielectric",
-        ]:
-            from simtk import unit as simtk_unit
-
-            parameter_value = simtk_unit.Quantity(parameter_value, unit=None)
+        if not isinstance(parameter_value, simtk_unit.Quantity):
+            parameter_value = parameter_value * simtk_unit.dimensionless
 
         return openmm_quantity_to_pint(parameter_value), is_cosmetic
 
@@ -495,14 +488,16 @@ class Evaluator_SMIRNOFF(Target):
                 string_key = field_list[0]
                 key_split = string_key.split("/")
 
-                if string_key.startswith("/"):
+                if len(key_split) == 3 and key_split[0] == "":
                     parameter_tag = key_split[1].strip()
-                    parameter_attribute = key_split[2].strip()
                     parameter_smirks = None
-                else:
-                    parameter_tag = key_split[0].strip()
                     parameter_attribute = key_split[2].strip()
+                elif len(key_split) == 4:
+                    parameter_tag = key_split[0].strip()
                     parameter_smirks = key_split[3].strip()
+                    parameter_attribute = key_split[2].strip()
+                else:
+                    raise NotImplementedError()
 
                 # Use the full attribute name (e.g. k1) for the gradient key.
                 parameter_gradient_key = ParameterGradientKey(
