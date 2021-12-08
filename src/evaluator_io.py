@@ -327,12 +327,11 @@ class Evaluator_SMIRNOFF(Target):
         bool
             Returns True if the parameter is a cosmetic one.
         """
-        from simtk import unit as simtk_unit
+        try:
+            import openmm.unit as simtk_unit
+        except ImportError:
+            import simtk.unit as simtk_unit
 
-        parameter_handler = self.FF.openff_forcefield.get_parameter_handler(
-            gradient_key.tag
-        )
-        parameter = (
             parameter_handler
             if gradient_key.smirks is None
             else parameter_handler.parameters[gradient_key.smirks]

@@ -32,12 +32,23 @@ from forcebalance.nifty import _exec
 from collections import OrderedDict
 from forcebalance.output import getLogger
 logger = getLogger(__name__)
+
+# Handle simtk namespace change around 7.6 release
 try:
-    from simtk.openmm.app import *
-    from simtk.openmm import *
-    from simtk.unit import *
-    import simtk.openmm._openmm as _openmm
-except:
+    try:
+        # Try importing openmm using >=7.6 namespace
+        from openmm.app import *
+        from openmm import *
+        from openmm.unit import *
+        import openmm._openmm as _openmm
+    except ImportError:
+        # Try importing openmm using <7.6 namespace
+        from simtk.openmm.app import *
+        from simtk.openmm import *
+        from simtk.unit import *
+        import simtk.openmm._openmm as _openmm
+except ImportError:
+    # Need to have "pass" conditional if neither is installed so that non-openmm builds can parse this file
     pass
 
 def get_mask(grps):
@@ -1281,12 +1292,15 @@ class OpenMM(Engine):
 
     def _update_positions(self, X1, disable_vsite):
         """A convenience method for updating the positions of the simulation context."""
+        # check if we have units
+        if isinstance(X1, numpy.ndarray):
+            X1 = X1 * angstrom
 
         if disable_vsite:
-            self.simulation.context.setPositions(X1 * angstrom)
+            self.simulation.context.setPositions(X1)
         else:
             # Create virtual sites before setting positions
-            mod = Modeller(self.pdb.topology, X1*angstrom)
+            mod = Modeller(self.pdb.topology, X1)
             mod.addExtraParticles(self.forcefield)
             self.simulation.context.setPositions(ResetVirtualSites_fast(mod.getPositions(), self.vsinfo))
 
