@@ -38,10 +38,18 @@ import json
 
 logger = getLogger(__name__)
 try:
-    from simtk.openmm.app import *
-    from simtk.openmm import *
-    from simtk.unit import *
-    import simtk.openmm._openmm as _openmm
+    try:
+        # Try importing openmm using >=7.6 namespace
+        from openmm.app import *
+        from openmm import *
+        from openmm.unit import *
+        import openmm._openmm as _openmm
+    except ImportError:
+        # Try importing openmm using <7.6 namespace
+        from simtk.openmm.app import *
+        from simtk.openmm import *
+        from simtk.unit import *
+        import simtk.openmm._openmm as _openmm
 except:
     pass
 
@@ -53,6 +61,8 @@ try:
     # QYD: name of class are modified to avoid colliding with ForceBalance Molecule
     from openff.toolkit.topology import Molecule as OffMolecule
     from openff.toolkit.topology import Topology as OffTopology
+    from openff.units import unit
+    from openff.units.openmm import ensure_quantity
     toolkit_import_success = True
 except ImportError:
     toolkit_import_success = False
@@ -113,7 +123,7 @@ def smirnoff_analyze_parameter_coverage(forcefield, tgt_opts):
         logger.info('%4i %-100s : %10d\n' % (i, p, parameter_counter[smirks]))
         if parameter_counter[smirks] > 0:
             n_covered += 1
-    logger.info("SNIRNOFF Parameter Coverage Analysis result: %d/%d parameters are covered.\n" % (n_covered, len(forcefield.plist)))
+    logger.info("SMIRNOFF Parameter Coverage Analysis result: %d/%d parameters are covered.\n" % (n_covered, len(forcefield.plist)))
     logger.info("-"*118 + '\n')
 
 class SMIRNOFF_Reader(BaseReader):
@@ -149,67 +159,52 @@ def assign_openff_parameter(ff, new_value, pid):
     # We use "value_name" to describe names of individual numerical values within a single parameter type
     # e.g. k1 in the above example.
 
-    # QYD: cache the parameter finding procedure, then directly change the _value of the quantity
-    # Note: This cache requires the quantity does not get overwritten, which is True since this function is the only
-    # place we modify the OpenFF ForceField parameters.
-    if not hasattr(ff, '_forcebalance_assign_parameter_map'):
-        ff._forcebalance_assign_parameter_map = dict()
-    if pid not in ff._forcebalance_assign_parameter_map:
+    if pid.startswith("/"):
+        # Handle the case were we are optimizing a handler attribute directly such
+        # as the 1-4 scaling factor.
+        handler_name, value_name = pid[1:].split('/')
 
-        if pid.startswith("/"):
-            # Handle the case where we are optimizing a handler attribute directly such
-            # as the 1-4 scaling factor.
-            handler_name, value_name = pid[1:].split('/')
+        # Get the OpenFF parameter handler.
+        parameter_container = ff.get_parameter_handler(handler_name)
 
-            # Get the OpenFF parameter handler.
-            parameter_container = ff.get_parameter_handler(handler_name)
+    else:
+        (handler_name, tag_name, value_name, smirks) = pid.split('/')
 
-        else:
-            (handler_name, tag_name, value_name, smirks) = pid.split('/')
+        from openff.toolkit.typing.engines.smirnoff import ParameterList
 
-            from openff.toolkit.typing.engines.smirnoff import ParameterList
+        # Get the OpenFF parameter object
 
-            # Get the OpenFF parameter object
+        # Temporary workaround for OpenFF issue #884
+        if not isinstance(ff.get_parameter_handler(handler_name).parameters, ParameterList):
 
-            # Temporary workaround for OpenFF issue #884
-            if not isinstance(ff.get_parameter_handler(handler_name).parameters, ParameterList):
-
-                ff.get_parameter_handler(handler_name)._parameters = ParameterList(
-                    ff.get_parameter_handler(handler_name).parameters
-                )
-
-            parameter_container = ff.get_parameter_handler(handler_name).parameters[smirks]
-
-        if hasattr(parameter_container, value_name):
-            # If the value name is an attribute of the parameter then we set it directly.
-            # Get the quantity of the parameter in the OpenFF forcefield object
-            param_quantity = getattr(parameter_container, value_name)
-
-        elif (hasattr(parameter_container, "_cosmetic_attribs") and
-              value_name in parameter_container._cosmetic_attribs):
-
-            param_quantity = None
-
-        else:
-            raise KeyError(
-                "The {} attribute is not supported by the {} handler".format(
-                    value_name, handler_name
-                )
+            ff.get_parameter_handler(handler_name)._parameters = ParameterList(
+                ff.get_parameter_handler(handler_name).parameters
             )
 
-        # We can't use the caching approach when the parameter is a simple float,
-        # hence we set it directly here.
-        if isinstance(param_quantity, (float, int)):
-            setattr(parameter_container, value_name, new_value)
-            param_quantity = None
-        else:
-            # save the found quantity in cache
-            ff._forcebalance_assign_parameter_map[pid] = param_quantity
+        parameter_container = ff.get_parameter_handler(handler_name).parameters[smirks]
+
+    # Get param_quantity so we can inspect the type and apply units later if appropriate.
+    # Also check for a few special cases and handle them individually.
+    if hasattr(parameter_container, value_name):
+        # Get the quantity of the parameter in the OpenFF forcefield object
+        param_quantity = getattr(parameter_container, value_name)
+
+    elif (hasattr(parameter_container, "_cosmetic_attribs") and
+          value_name in parameter_container._cosmetic_attribs):
+
+        return
     else:
-        param_quantity = ff._forcebalance_assign_parameter_map[pid]
-    # set new_value directly in the quantity
-    if param_quantity is not None:
-        param_quantity._value = new_value
+        raise KeyError(
+            "The {} attribute is not supported by the {} handler".format(
+                value_name, handler_name
+            )
+        )
+
+    if hasattr(param_quantity, "units"):
+        setattr(parameter_container, value_name, new_value * param_quantity.units)
+    else:
+        setattr(parameter_container, value_name, new_value)
+
 
 def smirnoff_update_pgrads(target):
     """
@@ -420,9 +415,14 @@ class SMIRNOFF(OpenMM):
 
         # Apply the FF parameters to the system. Currently this is the only way to
         # determine if the FF will apply virtual sites to the system.
-        _, openff_topology = self.forcefield.create_openmm_system(
-            self.off_topology, return_topology=True
-        )
+        interchange = self.forcefield.create_interchange(self.off_topology)
+
+        n_virtual_sites = 0
+        self._has_virtual_sites = False
+        if 'VirtualSites' in interchange.handlers:
+            n_virtual_sites = len(interchange['VirtualSites'].slot_map)
+            if n_virtual_sites > 0:
+                self._has_virtual_sites = True
 
         ## Generate OpenMM-compatible positions
         self.xyz_omms = []
@@ -430,14 +430,15 @@ class SMIRNOFF(OpenMM):
         for I in range(len(self.mol)):
             xyz = self.mol.xyzs[I]
             xyz_omm = (
-                [Vec3(i[0],i[1],i[2]) for i in xyz]
-                # Add placeholder positions for an v-sites.
-                + [Vec3(0.0, 0.0, 0.0)] * openff_topology.n_topology_virtual_sites
-            ) * angstrom
+                              [Vec3(i[0], i[1], i[2]) for i in xyz]
+                              # Add placeholder positions for an v-sites.
+                              + [Vec3(0.0, 0.0, 0.0)] * n_virtual_sites
+                      ) * angstrom
 
             if self.pbc:
                 # Obtain the periodic box
-                if self.mol.boxes[I].alpha != 90.0 or self.mol.boxes[I].beta != 90.0 or self.mol.boxes[I].gamma != 90.0:
+                if self.mol.boxes[I].alpha != 90.0 or self.mol.boxes[I].beta != 90.0 or self.mol.boxes[
+                    I].gamma != 90.0:
                     logger.error('OpenMM cannot handle nonorthogonal boxes.\n')
                     raise RuntimeError
                 box_omm = np.diag([self.mol.boxes[I].a, self.mol.boxes[I].b, self.mol.boxes[I].c]) * angstrom
@@ -446,15 +447,13 @@ class SMIRNOFF(OpenMM):
             # Finally append it to list.
             self.xyz_omms.append((xyz_omm, box_omm))
 
-        # used in create_simulation()
-        openmm_topology = SMIRNOFF._openff_to_openmm_topology(openff_topology)
+        openmm_topology = interchange.to_openmm_topology()
         openmm_positions = (
-            self.pdb.positions.value_in_unit(angstrom) +
-            # Add placeholder positions for an v-sites.
-            [Vec3(0.0, 0.0, 0.0)] * openff_topology.n_topology_virtual_sites
-        ) * angstrom
-
-        self.mod = Modeller(openmm_topology, openmm_positions)
+                                   self.pdb.positions.value_in_unit(angstrom) +
+                                   # Add placeholder positions for an v-sites.
+                                   [Vec3(0.0, 0.0, 0.0)] * n_virtual_sites
+                           ) * angstrom
+        self.mod = app.modeller.Modeller(openmm_topology, openmm_positions)
 
         ## Build a topology and atom lists.
         Top = self.mod.getTopology()
@@ -505,12 +504,14 @@ class SMIRNOFF(OpenMM):
         #         delattr(self, 'simulation')
         # self.vsprm = vsprm.copy()
 
-        if openff_topology.n_topology_virtual_sites > 0:
-            # For now always assume that the v-sites have changed. This is currently
-            # needed as the FB checks don't support the ``LocalCoordinatesSite`` based
-            # virtual sites that OpenFF uses.
-            if hasattr(self, 'simulation'):
-                delattr(self, 'simulation')
+        has_vsites = False
+        for particle_idx in range(self.system.getNumParticles()):
+            if self.system.isVirtualSite(particle_idx):
+                has_vsites = True
+
+        if has_vsites:
+            raise Exception("ForceBalance can't currently handle SMIRNOFF vsites. "
+                            "Downgrade to ForceBalance 1.9.3 or earlier to handle those.")
 
         if hasattr(self, 'simulation'):
             UpdateSimulationParameters(self.system, self.simulation)
